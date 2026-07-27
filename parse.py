@@ -1,89 +1,143 @@
 import email
-import os
-from email.utils import parseaddr, parsedate_to_datetime
 from email.header import decode_header
+from email.utils import parseaddr, parsedate_to_datetime
+from bs4 import BeautifulSoup
 
 
 def decode_payload(part):
     payload = part.get_payload(decode=True)
-    if payload:
-        return payload.decode(
-            part.get_content_charset() or "utf-8",
-            errors="ignore"
-        )
-    return ""
+    if not payload:
+        return ""
+
+    charset = part.get_content_charset() or "utf-8"
+    return payload.decode(charset, errors="ignore")
 
 
-def parse(mail_id, x, imap):
-    stat, data = imap.fetch(mail_id, "(RFC822)")
+def decode_header_value(value):
+    if not value:
+        return ""
 
-    raw_email = data[0][1]
-    msg = email.message_from_bytes(raw_email)
+    result = ""
+    for text, encoding in decode_header(value):
+        if isinstance(text, bytes):
+            result += text.decode(encoding or "utf-8", errors="ignore")
+        else:
+            result += text
+    return result
 
-    # Decode sender name
-    name, email_addr = parseaddr(msg["From"])
-    decoded_name = ""
-    for part, enc in decode_header(name):
-        decoded_name += part.decode(enc or "utf-8") if isinstance(part, bytes) else part
 
-    # Decode subject
-    subject = ""
-    for part, enc in decode_header(msg["Subject"]):
-        subject += part.decode(enc or "utf-8") if isinstance(part, bytes) else part
+def html_to_text(html):
+    soup = BeautifulSoup(html, "html.parser")
 
-    # Format date
-    dt = parsedate_to_datetime(msg["Date"]).astimezone()
+    for tag in soup(["script", "style", "head", "title", "meta"]):
+        tag.decompose()
+
+    for link in soup.find_all("a"):
+        href = link.get("href")
+        if href:
+            link.append(f" ({href})")
+
+    text = soup.get_text(separator="\n")
+
+    lines = [line.strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+
+    return "\n".join(lines)
+
+
+def parse(mail_id, mode, imap):
+    status, data = imap.fetch(mail_id, "(RFC822)")
+    if status != "OK":
+        print("Failed to retrieve email.")
+        return
+
+    msg = email.message_from_bytes(data[0][1])
+
+    name, email_addr = parseaddr(msg.get("From"))
+    sender = decode_header_value(name)
+    subject = decode_header_value(msg.get("Subject"))
+
+    dt = parsedate_to_datetime(msg.get("Date")).astimezone()
     formatted_date = dt.strftime("%a, %d %b %Y %I:%M %p")
 
-    # Summary view
-    if x == 0:
+    # Inbox preview
+    if mode == 0:
         print(f"[{int(mail_id)}]")
-        print(f"    From    : {decoded_name}")
+        print(f"    From    : {sender}")
         print(f"    Date    : {formatted_date}")
         print(f"    Subject : {subject}\n")
+        return
 
-    # Detailed view
-    elif x == 1:
+    body = ""
+    html_body = ""
+    attachments = []
 
-        body = ""
-        attachments = []
+    if msg.is_multipart():
+        for part in msg.walk():
 
-        if msg.is_multipart():
-            for part in msg.walk():
+            disposition = part.get_content_disposition()
+            filename = part.get_filename()
 
-                filename = part.get_filename()
-                if filename:
-                    attachments.append(filename)
+            if disposition == "attachment" and filename:
+                attachments.append((decode_header_value(filename), part))
+                continue
 
-                disposition = str(part.get("Content-Disposition"))
-                if "attachment" in disposition.lower():
-                    continue
+            ctype = part.get_content_type()
 
-                if part.get_content_type() == "text/plain":
-                    body = decode_payload(part)
-                    if body:
-                        break
+            if ctype == "text/plain" and not body:
+                text = decode_payload(part)
+                if text.strip():
+                    body = text
 
-            if not body:
-                for part in msg.walk():
-                    if part.get_content_type() == "text/html":
-                        body = decode_payload(part)
-                        if body:
-                            break
+            elif ctype == "text/html" and not html_body:
+                html = decode_payload(part)
+                if html.strip():
+                    html_body = html
 
-        else:
+    else:
+        if msg.get_content_type() == "text/plain":
             body = decode_payload(msg)
+        elif msg.get_content_type() == "text/html":
+            html_body = decode_payload(msg)
 
-        print(f"Mail ID : {int(mail_id)}")
-        print(f"From    : {decoded_name} <{email_addr}>")
-        print(f"To      : {msg['To']}")
-        print(f"Date    : {formatted_date}")
-        print(f"Subject : {subject}")
+    if not body and html_body:
+        body = html_to_text(html_body)
 
-        if attachments:
-            print("\nAttachments:")
-            for file in attachments:
-                print(f"  - {file}")
+    # -------- Display email --------
 
-        print("\nBody:\n")
-        print(body)
+    print(f"Mail ID : {int(mail_id)}")
+    print(f"From    : {sender} <{email_addr}>")
+    print(f"To      : {msg.get('To')}")
+    print(f"Date    : {formatted_date}")
+    print(f"Subject : {subject}")
+
+    print("\n" + "=" * 80)
+    print("Body:\n")
+    print(body if body else "[No message body]")
+    print("=" * 80)
+
+    # -------- Attachments --------
+
+    if attachments:
+        print("\nAttachments:")
+        for i, (filename, _) in enumerate(attachments, start=1):
+            print(f"  {i}. {filename}")
+
+        choice = input(
+            "\nDownload attachment(s)? "
+            "(numbers separated by commas or Enter to skip): "
+        ).strip()
+
+        if choice:
+            try:
+                for idx in [int(x.strip()) - 1 for x in choice.split(",")]:
+                    if 0 <= idx < len(attachments):
+                        filename, part = attachments[idx]
+
+                        with open(filename, "wb") as f:
+                            f.write(part.get_payload(decode=True))
+
+                        print(f"Downloaded: {filename}")
+
+            except ValueError:
+                print("Invalid selection.")

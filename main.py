@@ -1,97 +1,180 @@
 import os
+import time
+import getpass
 import imaplib
-from getpass import getpass
-from parse import parse
+import smtplib
+
+import viewmail
+import sendmail
 
 
-imap_server = "imap.gmail.com"
+logged = False
 
-email_id = input("Enter your email: ")
-password = getpass("Enter your password: ")
 
-imap = imaplib.IMAP4_SSL(imap_server)
-imap.login(email_id, password)
-
-os.system("cls" if os.name == "nt" else "clear")
-
-imap.select("INBOX")
-_, msgnum = imap.search(None, "ALL")
-mail_ids = msgnum[0].split()
-
-page = 0
-per_page = 10
+def clear():
+    os.system("cls" if os.name == "nt" else "clear")
 
 
 while True:
-    os.system("cls" if os.name == "nt" else "clear")
+    clear()
 
-    total_pages = (len(mail_ids) - 1) // per_page + 1
+    while not logged:
+        clear()
 
-    start = len(mail_ids) - ((page + 1) * per_page)
-    end = len(mail_ids) - (page * per_page)
+        choice = input(
+            "1. Log In\n"
+            "2. Quit\n"
+            ">> "
+        )
 
-    if start < 0:
-        start = 0
+        if choice == "1":
 
-    current_mails = mail_ids[start:end]
+            clear()
 
-    print("=" * 100)
-    print(f"   Inbox   | Page {page + 1}/{total_pages}")
-    print("=" * 100)
+            provider = input(
+                "Choose provider:\n"
+                "1. Gmail\n"
+                "2. Custom Server\n"
+                ">> "
+            )
 
-    for i, mail_id in enumerate(reversed(current_mails), start=1):
-        print(f"{i}. ", end="")
-        parse(mail_id, 0, imap)
+            clear()
 
-    print()
-    print("=" * 50)
-    print("n : next page")
-    print("p : previous page")
-    print("0 : exit")
+            if provider == "1":
+                imap_server = "imap.gmail.com"
+                smtp_server = "smtp.gmail.com"
+                smtp_port = 587
 
-    choice = input("Open email / command: ")
+            elif provider == "2":
+                imap_server = input("IMAP Server: ")
+                smtp_server = input("SMTP Server: ")
 
-    if choice == "0":
-        break
+                try:
+                    smtp_port = int(input("SMTP Port: "))
+                except ValueError:
+                    print("Invalid port.")
+                    time.sleep(1)
+                    continue
 
-    elif choice.lower() == "n":
-        if page < total_pages - 1:
-            page += 1
+            else:
+                print("Invalid choice.")
+                time.sleep(1)
+                continue
+
+            email_id = input("Email: ")
+            password = getpass.getpass("Password: ")
+
+            imap = None
+            smtp = None
+
+            try:
+                # IMAP
+                imap = imaplib.IMAP4_SSL(imap_server, timeout=10)
+                imap.login(email_id, password)
+
+                # SMTP
+                smtp = smtplib.SMTP(smtp_server, smtp_port, timeout=10)
+                smtp.ehlo()
+                smtp.starttls()
+                smtp.ehlo()
+                smtp.login(email_id, password)
+
+                logged = True
+
+                print("Login successful.")
+                time.sleep(1)
+
+            except imaplib.IMAP4.error:
+                print("IMAP authentication failed.")
+
+            except smtplib.SMTPAuthenticationError:
+                print("SMTP authentication failed.")
+
+            except smtplib.SMTPHeloError:
+                print("SMTP HELO/EHLO failed.")
+
+            except smtplib.SMTPNotSupportedError:
+                print("SMTP AUTH not supported.")
+
+            except smtplib.SMTPException as e:
+                print(f"SMTP error: {e}")
+
+            except Exception as e:
+                print(f"Login failed: {e}")
+
+            finally:
+                if not logged:
+                    if imap:
+                        try:
+                            imap.logout()
+                        except:
+                            pass
+
+                    if smtp:
+                        try:
+                            smtp.quit()
+                        except:
+                            pass
+
+                    time.sleep(1)
+
+        elif choice == "2":
+            exit()
+
         else:
-            input("Already at last page. Press Enter...")
-            
-    elif choice.lower() == "p":
-        if page > 0:
-            page -= 1
+            print("Invalid choice.")
+            time.sleep(1)
+
+    # ---------------- Logged In ----------------
+
+    while logged:
+
+        clear()
+
+        service = input(
+            "1. Send Mail\n"
+            "2. View Mails\n"
+            "3. Logout\n"
+            "4. Quit\n"
+            ">> "
+        )
+
+        if service == "1":
+            clear()
+            sendmail.send(smtp, email_id)
+            input("\nPress Enter to continue...")
+
+        elif service == "2":
+            viewmail.view(imap)
+
+        elif service == "3":
+
+            try:
+                imap.logout()
+            except:
+                pass
+
+            try:
+                smtp.quit()
+            except:
+                pass
+
+            logged = False
+
+        elif service == "4":
+
+            try:
+                imap.logout()
+            except:
+                pass
+
+            try:
+                smtp.quit()
+            except:
+                pass
+
+            exit()
+
         else:
-            input("Already at first page. Press Enter...")
-
-    elif choice.isdigit():
-        choice = int(choice)
-
-        if 1 <= choice <= len(current_mails):
-            selected = list(reversed(current_mails))[choice - 1]
-
-            while True:
-                os.system("cls" if os.name == "nt" else "clear")
-
-                parse(selected, 1, imap)
-
-                print("\n" + "=" * 50)
-                print("v : back to inbox")
-                print("0 : exit")
-
-                action = input("What next? ")
-
-                if action.lower() == "v":
-                    break
-
-                elif action == "0":
-                    imap.logout()
-                    exit()
-
-        else:
-            input("Invalid email number. Press Enter...")
-
-
-imap.logout()
+            print("Invalid choice.")
+            time.sleep(1)
